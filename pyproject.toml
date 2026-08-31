@@ -1,0 +1,16 @@
+[project]
+name = "tnfs-client"
+version = "0.2.0"
+description = "Command-line client for TNFS servers (FujiNet, Spectranet)"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+tui = ["textual>=0.47.0"]
+
+[project.scripts]
+tnfscli = "tnfscli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
