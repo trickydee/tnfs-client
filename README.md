@@ -6,7 +6,7 @@ It supports three ways to work with a server:
 
 - **One-shot commands** for scripting and quick tasks
 - **Interactive shell** with a remote working directory
-- **TUI browser** for keyboard-driven navigation
+- **TUI browser** for keyboard-driven dual-pane navigation
 
 ## Requirements
 
@@ -51,13 +51,15 @@ pip install -e ".[tui]"
 ## One-shot commands
 
 ```bash
-python tnfscli.py ls
-python tnfscli.py ls -l /
-python tnfscli.py mkdir /games
-python tnfscli.py stat /example.atr
-python tnfscli.py get /example.atr ./example.atr
-python tnfscli.py put ./hello.txt /hello.txt
-python tnfscli.py df
+python tnfscli.py --host tnfs.example ls
+python tnfscli.py --host tnfs.example ls -l /
+python tnfscli.py --host tnfs.example mkdir /games
+python tnfscli.py --host tnfs.example rmdir /games
+python tnfscli.py --host tnfs.example stat /example.atr
+python tnfscli.py --host tnfs.example get /example.atr ./example.atr
+python tnfscli.py --host tnfs.example put ./hello.txt /hello.txt
+python tnfscli.py --host tnfs.example rm /hello.txt
+python tnfscli.py --host tnfs.example df
 ```
 
 ## Interactive shell
@@ -65,50 +67,61 @@ python tnfscli.py df
 Start a persistent session with a remote working directory:
 
 ```bash
-python tnfscli.py shell
+python tnfscli.py --host tnfs.example shell
+# or
+./scripts/tnfs-shell --host tnfs.example
 ```
 
 Example session:
 
 ```text
-Connected to localhost:16384 via tcp (TNFS 1.3)
+Connected to tnfs.example:16384 via tcp (TNFS 1.3)
 Type 'help' for commands, 'quit' to exit.
-tnfs://localhost/> ls
-tnfs://localhost/> cd games
-tnfs://localhost/games> pwd
+tnfs://tnfs.example/> ls
+tnfs://tnfs.example/> cd games
+tnfs://tnfs.example/games> pwd
 /games
-tnfs://localhost/games> get rom.atr
-tnfs://localhost/games> quit
+tnfs://tnfs.example/games> get rom.atr
+tnfs://tnfs.example/games> quit
 ```
 
 Shell commands: `ls`, `cd`, `pwd`, `stat`, `cat`, `get`, `put`, `mkdir`, `rmdir`, `rm`, `df`, `help`, `quit`
 
 ## TUI browser
 
-Dual-pane file manager with remote TNFS on the left and your local filesystem on the right.
+Dual-pane file manager: **remote TNFS on the left**, **local filesystem on the right**.
 
 ```bash
+./scripts/tnfs-tui --host tnfs.example
 python tnfscli.py tui --host tnfs.example
 python tnfscli.py --host tnfs.example tui --local-dir ~/Downloads
-./scripts/tnfs-tui --host tnfs.example
 ```
 
-Keyboard shortcuts:
+The TUI connects before launching. If the host is unreachable (for example the default `localhost` with no server), it fails quickly with a tip instead of showing a blank screen.
+
+### Navigation
 
 | Key | Action |
 |-----|--------|
 | `Tab` | Switch between remote and local panes |
-| `Enter` | Open directory or preview file |
-| `Backspace` | Go to parent directory in focused pane |
-| `g` | Download selected remote file to local directory |
-| `p` | Upload selected local file to remote directory |
+| `Enter` | Open a directory, or preview a file |
+| `..` + `Enter` | Go up one directory (shown at the top of listings) |
+| `Backspace` | Go to parent directory in the focused pane |
+| `g` | Download selected remote file into the local pane's current directory |
+| `p` | Upload selected local file into the remote pane's current directory |
 | `m` | Create a directory in the focused pane |
 | `Delete` | Remove selected file (remote or local) |
 | `r` | Refresh focused pane |
 | `/` | Focus command bar |
 | `q` | Quit |
 
-Downloads land in the local pane's current directory and the local pane refreshes automatically. Status messages clear after a few seconds.
+Typical workflow:
+
+1. Start with `--host` pointing at your TNFS server
+2. Press `Tab` to focus the local pane and navigate to the folder you want (use `Enter` / `..`)
+3. Press `Tab` back to remote, open folders with `Enter`, download with `g` or upload with `p`
+
+Downloads land in the local pane's current directory and that pane refreshes automatically. Status messages clear after a few seconds.
 
 The command bar accepts shell-style commands such as `cd`, `get`, `put`, `mkdir`, `rm`, and `rmdir` (applied to the focused pane).
 
@@ -119,14 +132,16 @@ The command bar accepts shell-style commands such as `cd`, `get`, `put`, `mkdir`
 | `--host` | `localhost` | TNFS server hostname |
 | `--port` | `16384` | TNFS server port |
 | `--mount` | `/` | Mount path on the server |
-| `--transport` | auto | `udp` or `tcp` (auto tries TCP first) |
+| `--transport` | auto | `udp` or `tcp` (tries TCP first, then UDP) |
+
+TNFS servers must support UDP on port 16384; TCP is optional. This client prefers TCP when available.
 
 ## Library usage
 
 ```python
 from tnfs.remote import RemoteSession
 
-with RemoteSession("localhost") as session:
+with RemoteSession("tnfs.example") as session:
     session.chdir("/games")
     for entry in session.list_entries():
         print(entry.name, entry.size)

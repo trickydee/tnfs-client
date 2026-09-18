@@ -64,6 +64,9 @@ class LocalBrowser:
             )
 
         entries.sort(key=lambda entry: (not entry.is_dir, entry.name.lower()))
+        parent = self.parent_dir()
+        if parent != self.cwd:
+            entries.insert(0, LocalEntry(name="..", path=parent, is_dir=True))
         return entries
 
     def format_details(self, entry: LocalEntry) -> str:

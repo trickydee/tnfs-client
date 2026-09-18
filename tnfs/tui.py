@@ -342,6 +342,10 @@ class TNFSBrowser(App):
         if entry is None:
             details.write("[dim]No remote selection[/dim]")
             return
+        if entry.name == "..":
+            details.write("Parent directory")
+            details.write(f"Path:        {entry.path}")
+            return
         assert self.session is not None
         try:
             info = self.session.client.stat(entry.path)
@@ -354,6 +358,10 @@ class TNFSBrowser(App):
         details.clear()
         if entry is None:
             details.write("[dim]No local selection[/dim]")
+            return
+        if entry.name == "..":
+            details.write("Parent directory")
+            details.write(f"Path:        {entry.path}")
             return
         details.write(self.local_browser.format_details(entry))
 
@@ -379,6 +387,23 @@ class TNFSBrowser(App):
         self._local_cursor_index = event.cursor_row
         if self.active_pane == "local":
             self._show_local_details(self.local_entries[event.cursor_row])
+
+    @on(DataTable.RowSelected, "#remote-table")
+    def on_remote_row_selected(self, event: DataTable.RowSelected) -> None:
+        # DataTable consumes Enter for RowSelected, so open from here.
+        if self._valid_row(event.cursor_row, self.remote_entries):
+            self._remote_cursor_index = event.cursor_row
+        self.active_pane = "remote"
+        self._update_pane_styles()
+        self._open_remote_selected()
+
+    @on(DataTable.RowSelected, "#local-table")
+    def on_local_row_selected(self, event: DataTable.RowSelected) -> None:
+        if self._valid_row(event.cursor_row, self.local_entries):
+            self._local_cursor_index = event.cursor_row
+        self.active_pane = "local"
+        self._update_pane_styles()
+        self._open_local_selected()
 
     def action_switch_pane(self) -> None:
         if self.active_pane == "remote":
@@ -429,12 +454,16 @@ class TNFSBrowser(App):
     def _open_remote_selected(self) -> None:
         entry = self._selected_remote_entry()
         if entry is None:
+            self._set_status("No remote entry selected", transient=True)
             return
         if entry.is_dir:
             assert self.session is not None
-            self.session.chdir(entry.path)
-            self.refresh_remote_listing()
-            self._set_status(f"Remote directory: {self.session.cwd}", transient=True)
+            try:
+                self.session.chdir(entry.path)
+                self.refresh_remote_listing()
+                self._set_status(f"Remote directory: {self.session.cwd}", transient=True)
+            except TNFSError as exc:
+                self._set_status(f"Cannot enter directory: {exc}", transient=True)
             return
 
         try:
@@ -562,6 +591,9 @@ class TNFSBrowser(App):
             entry = self._selected_remote_entry()
             if entry is None:
                 return
+            if entry.name == "..":
+                self._set_status("Cannot delete '..'", transient=True)
+                return
             assert self.session is not None
             try:
                 if entry.is_dir:
@@ -577,6 +609,9 @@ class TNFSBrowser(App):
 
         entry = self._selected_local_entry()
         if entry is None:
+            return
+        if entry.name == "..":
+            self._set_status("Cannot delete '..'", transient=True)
             return
         if entry.is_dir:
             self._set_status("Local directory delete is not supported", transient=True)

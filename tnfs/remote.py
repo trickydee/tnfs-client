@@ -109,6 +109,11 @@ class RemoteSession:
                     )
                 )
         entries.sort(key=lambda entry: (not entry.is_dir, entry.name.lower()))
+        if directory != "/":
+            entries.insert(
+                0,
+                RemoteEntry(name="..", path=self.parent_dir(), is_dir=True),
+            )
         return entries
 
     def stat(self, path: str) -> tuple[str, FileStat]:
