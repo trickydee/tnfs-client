@@ -33,10 +33,13 @@ This creates `.venv` with the project and TUI dependencies installed.
 Examples:
 
 ```bash
-./scripts/tnfs ls -l /
-./scripts/tnfs-shell
-./scripts/tnfs-tui --host localhost
+./scripts/tnfs --host tnfs.example ls -l /
+./scripts/tnfs ls -l / --host tnfs.example
+./scripts/tnfs-shell --host tnfs.example
+./scripts/tnfs-tui --host tnfs.example
 ```
+
+Connection options (`--host`, `--port`, `--mount`, `--transport`) can go before or after the subcommand.
 
 Or manually:
 
@@ -50,6 +53,7 @@ pip install -e ".[tui]"
 ```bash
 python tnfscli.py ls
 python tnfscli.py ls -l /
+python tnfscli.py mkdir /games
 python tnfscli.py stat /example.atr
 python tnfscli.py get /example.atr ./example.atr
 python tnfscli.py put ./hello.txt /hello.txt
@@ -84,8 +88,9 @@ Shell commands: `ls`, `cd`, `pwd`, `stat`, `cat`, `get`, `put`, `mkdir`, `rmdir`
 Dual-pane file manager with remote TNFS on the left and your local filesystem on the right.
 
 ```bash
-python tnfscli.py tui
-python tnfscli.py tui --local-dir ~/Downloads
+python tnfscli.py tui --host tnfs.example
+python tnfscli.py --host tnfs.example tui --local-dir ~/Downloads
+./scripts/tnfs-tui --host tnfs.example
 ```
 
 Keyboard shortcuts:
@@ -97,6 +102,7 @@ Keyboard shortcuts:
 | `Backspace` | Go to parent directory in focused pane |
 | `g` | Download selected remote file to local directory |
 | `p` | Upload selected local file to remote directory |
+| `m` | Create a directory in the focused pane |
 | `Delete` | Remove selected file (remote or local) |
 | `r` | Refresh focused pane |
 | `/` | Focus command bar |

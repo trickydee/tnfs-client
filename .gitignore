@@ -4,3 +4,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .DS_Store
+*.zip
+*.atr
+*.xex
+*.atr.gz

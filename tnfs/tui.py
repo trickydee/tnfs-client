@@ -14,12 +14,78 @@ try:
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import Horizontal, Vertical
+    from textual.screen import ModalScreen
     from textual.timer import Timer
-    from textual.widgets import DataTable, Footer, Header, Input, RichLog, Static
+    from textual.widgets import Button, DataTable, Footer, Header, Input, Label, RichLog, Static
 except ImportError as exc:  # pragma: no cover - exercised when optional dep missing
     raise ImportError(
         "The TUI requires the 'textual' package. Install it with: pip install 'tnfs-client[tui]'"
     ) from exc
+
+
+class DirectoryNamePrompt(ModalScreen[str | None]):
+    """Ask for a directory name."""
+
+    CSS = """
+    DirectoryNamePrompt {
+        align: center middle;
+    }
+
+    #prompt-box {
+        width: 60;
+        height: auto;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #prompt-buttons {
+        height: auto;
+        margin-top: 1;
+        align: right middle;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(self, title: str = "Create directory"):
+        super().__init__()
+        self._title = title
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="prompt-box"):
+            yield Label(self._title)
+            yield Input(placeholder="directory-name", id="name-input")
+            with Horizontal(id="prompt-buttons"):
+                yield Button("Cancel", id="cancel", variant="default")
+                yield Button("Create", id="create", variant="primary")
+
+    def on_mount(self) -> None:
+        self.query_one("#name-input", Input).focus()
+
+    @on(Input.Submitted, "#name-input")
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit(event.value)
+
+    @on(Button.Pressed, "#create")
+    def on_create(self) -> None:
+        self._submit(self.query_one("#name-input", Input).value)
+
+    @on(Button.Pressed, "#cancel")
+    def on_cancel_button(self) -> None:
+        self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    def _submit(self, value: str) -> None:
+        name = value.strip().strip("/\\")
+        if not name or "/" in name or "\\" in name:
+            self.app.notify("Enter a single directory name (no path separators)", severity="warning")
+            return
+        self.dismiss(name)
 
 
 class TNFSBrowser(App):
@@ -94,6 +160,7 @@ class TNFSBrowser(App):
         Binding("backspace", "go_up", "Up"),
         Binding("g", "download_selected", "Get"),
         Binding("p", "upload_selected", "Put"),
+        Binding("m", "mkdir", "Mkdir"),
         Binding("delete", "delete_selected", "Delete"),
         Binding("slash", "focus_command", "Command", show=False),
     ]
@@ -105,6 +172,7 @@ class TNFSBrowser(App):
         transport: str | None = None,
         mount_path: str = "/",
         local_dir: str | Path | None = None,
+        session: RemoteSession | None = None,
     ):
         super().__init__()
         self.host = host
@@ -112,7 +180,7 @@ class TNFSBrowser(App):
         self.transport = transport
         self.mount_path = mount_path
         self.local_browser = LocalBrowser(Path(local_dir) if local_dir else None)
-        self.session: RemoteSession | None = None
+        self.session = session
         self.remote_entries: list[RemoteEntry] = []
         self.local_entries: list[LocalEntry] = []
         self._remote_cursor_index = 0
@@ -120,6 +188,7 @@ class TNFSBrowser(App):
         self.active_pane = "remote"
         self._status_timer: Timer | None = None
         self._busy = False
+        self._owns_session = session is None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -133,7 +202,7 @@ class TNFSBrowser(App):
                 yield Static("", id="local-path", classes="pane-path")
                 yield DataTable(id="local-table", classes="file-table", cursor_type="row", zebra_stripes=True)
         yield RichLog(id="details", wrap=True, highlight=True, markup=True)
-        yield Static("", id="status")
+        yield Static("Starting...", id="status")
         with Vertical(id="command-bar"):
             yield Input(
                 placeholder="Commands: cd, get, put, mkdir, rm (applies to focused pane)",
@@ -146,19 +215,24 @@ class TNFSBrowser(App):
             table = self.query_one(f"#{table_id}", DataTable)
             table.add_columns("Type", "Size", "Modified", "Name")
 
-        self.session = RemoteSession(
-            host=self.host,
-            port=self.port,
-            transport=self.transport,
-            mount_path=self.mount_path,
-        )
+        if self.session is None:
+            self._set_status(f"Connecting to {self.host}:{self.port}...")
+            self.session = RemoteSession(
+                host=self.host,
+                port=self.port,
+                transport=self.transport,
+                mount_path=self.mount_path,
+                timeout=5.0,
+            )
+            self._owns_session = True
+
         self._restore_status()
         self.refresh_remote_listing()
         self.refresh_local_listing()
         self.query_one("#remote-table", DataTable).focus()
 
     def on_unmount(self) -> None:
-        if self.session is not None:
+        if self.session is not None and self._owns_session:
             self.session.close()
             self.session = None
 
@@ -170,7 +244,8 @@ class TNFSBrowser(App):
         if self._status_timer is not None:
             self._status_timer.stop()
             self._status_timer = None
-        self.query_one("#status", Static).update(message)
+        safe_message = message.replace("[", "\\[")
+        self.query_one("#status", Static).update(safe_message)
         if transient:
             self._status_timer = self.set_timer(4.0, self._restore_status)
 
@@ -282,9 +357,16 @@ class TNFSBrowser(App):
             return
         details.write(self.local_browser.format_details(entry))
 
+    def _valid_row(self, cursor_row: int | None, entries: list) -> bool:
+        return (
+            cursor_row is not None
+            and cursor_row >= 0
+            and cursor_row < len(entries)
+        )
+
     @on(DataTable.RowHighlighted, "#remote-table")
     def on_remote_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        if event.cursor_row is None or event.cursor_row >= len(self.remote_entries):
+        if not self._valid_row(event.cursor_row, self.remote_entries):
             return
         self._remote_cursor_index = event.cursor_row
         if self.active_pane == "remote":
@@ -292,7 +374,7 @@ class TNFSBrowser(App):
 
     @on(DataTable.RowHighlighted, "#local-table")
     def on_local_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        if event.cursor_row is None or event.cursor_row >= len(self.local_entries):
+        if not self._valid_row(event.cursor_row, self.local_entries):
             return
         self._local_cursor_index = event.cursor_row
         if self.active_pane == "local":
@@ -394,8 +476,8 @@ class TNFSBrowser(App):
         if entry.is_dir:
             self._set_status("Select a remote file to download", transient=True)
             return
-        destination = self.local_browser.cwd / entry.name
-        self._set_busy(f"Downloading {entry.name} to {destination}...")
+        destination = (self.local_browser.cwd / entry.name).resolve()
+        self._set_busy(f"Downloading {entry.name} -> {destination}")
         self._download_entry(entry, destination)
 
     @work(thread=True, exclusive=True)
@@ -403,6 +485,7 @@ class TNFSBrowser(App):
         assert self.session is not None
         try:
             data = self.session.client.read_file(entry.path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(data)
             self.call_from_thread(self._finish_download, entry.path, destination, len(data))
         except (TNFSError, OSError) as exc:
@@ -449,6 +532,30 @@ class TNFSBrowser(App):
 
     def _fail_transfer(self, message: str) -> None:
         self._clear_busy(message, transient=True)
+
+    def action_mkdir(self) -> None:
+        where = "remote" if self.active_pane == "remote" else "local"
+        self.push_screen(
+            DirectoryNamePrompt(f"Create {where} directory"),
+            self._on_mkdir_name,
+        )
+
+    def _on_mkdir_name(self, name: str | None) -> None:
+        if not name:
+            return
+        try:
+            if self.active_pane == "remote":
+                assert self.session is not None
+                created = self.session.mkdir(name)
+                self.refresh_remote_listing()
+                self._set_status(f"Created remote directory {created}", transient=True)
+            else:
+                path = self.local_browser.resolve(name)
+                path.mkdir(parents=False, exist_ok=False)
+                self.refresh_local_listing()
+                self._set_status(f"Created local directory {path}", transient=True)
+        except (TNFSError, OSError, FileExistsError) as exc:
+            self._set_status(f"mkdir failed: {exc}", transient=True)
 
     def action_delete_selected(self) -> None:
         if self.active_pane == "remote":
@@ -602,12 +709,38 @@ def run_tui(
     mount_path: str = "/",
     local_dir: str | Path | None = None,
 ) -> int:
-    app = TNFSBrowser(
-        host=host,
-        port=port,
-        transport=transport,
-        mount_path=mount_path,
-        local_dir=local_dir,
-    )
-    app.run()
+    import sys
+
+    print(f"Connecting to {host}:{port}...", flush=True)
+    try:
+        session = RemoteSession(
+            host=host,
+            port=port,
+            transport=transport,
+            mount_path=mount_path,
+            timeout=5.0,
+        )
+    except (TNFSError, OSError, TimeoutError) as exc:
+        print(f"Connection failed: {exc}", file=sys.stderr)
+        if host == "localhost":
+            print(
+                "Tip: default host is localhost. Pass your server explicitly, e.g.\n"
+                "  ./scripts/tnfs-tui --host tnfs.home.lab",
+                file=sys.stderr,
+            )
+        return 1
+
+    print(f"Connected via {session.transport} (TNFS {session.version})")
+    try:
+        app = TNFSBrowser(
+            host=host,
+            port=port,
+            transport=transport,
+            mount_path=mount_path,
+            local_dir=local_dir,
+            session=session,
+        )
+        app.run()
+    finally:
+        session.close()
     return 0

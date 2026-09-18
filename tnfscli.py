@@ -192,69 +192,141 @@ def cmd_tui(args: argparse.Namespace) -> int:
         return 1
 
 
-def add_connection_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--host", default="localhost", help="TNFS server hostname")
-    parser.add_argument("--port", type=int, default=16384, help="TNFS server port")
-    parser.add_argument("--mount", default="/", help="Mount path on the server")
+def add_connection_args(
+    parser: argparse.ArgumentParser,
+    *,
+    suppress_defaults: bool = False,
+) -> None:
+    # When the same options exist on both the top-level parser and a
+    # subparser, subparser defaults would overwrite values set before the
+    # subcommand. Use SUPPRESS on subparsers so that only explicitly passed
+    # flags override the top-level values.
+    default = argparse.SUPPRESS if suppress_defaults else None
+    parser.add_argument(
+        "--host",
+        default="localhost" if default is None else default,
+        help="TNFS server hostname",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=16384 if default is None else default,
+        help="TNFS server port",
+    )
+    parser.add_argument(
+        "--mount",
+        default="/" if default is None else default,
+        help="Mount path on the server",
+    )
     parser.add_argument(
         "--transport",
         choices=["udp", "tcp"],
-        default=None,
+        default=default,
         help="Force UDP or TCP (default: try TCP, fall back to UDP)",
     )
 
 
 def build_parser() -> argparse.ArgumentParser:
+    connection_parser = argparse.ArgumentParser(add_help=False)
+    add_connection_args(connection_parser)
+
+    sub_connection_parser = argparse.ArgumentParser(add_help=False)
+    add_connection_args(sub_connection_parser, suppress_defaults=True)
+
     parser = argparse.ArgumentParser(
         prog="tnfscli",
         description="Client utility for TNFS servers (FujiNet, Spectranet, etc.)",
+        parents=[connection_parser],
     )
-    add_connection_args(parser)
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    ls_parser = subparsers.add_parser("ls", help="List files on the remote server")
+    ls_parser = subparsers.add_parser(
+        "ls",
+        help="List files on the remote server",
+        parents=[sub_connection_parser],
+    )
     ls_parser.add_argument("path", nargs="?", default="/", help="Directory path to list")
     ls_parser.add_argument("-l", "--long", action="store_true", help="Long listing format")
     ls_parser.set_defaults(func=cmd_ls)
 
-    stat_parser = subparsers.add_parser("stat", help="Show file or directory metadata")
+    stat_parser = subparsers.add_parser(
+        "stat",
+        help="Show file or directory metadata",
+        parents=[sub_connection_parser],
+    )
     stat_parser.add_argument("path", help="Remote path")
     stat_parser.set_defaults(func=cmd_stat)
 
-    cat_parser = subparsers.add_parser("cat", help="Print a remote file to stdout")
+    cat_parser = subparsers.add_parser(
+        "cat",
+        help="Print a remote file to stdout",
+        parents=[sub_connection_parser],
+    )
     cat_parser.add_argument("path", help="Remote file path")
     cat_parser.set_defaults(func=cmd_cat)
 
-    get_parser = subparsers.add_parser("get", help="Download a remote file")
+    get_parser = subparsers.add_parser(
+        "get",
+        help="Download a remote file",
+        parents=[sub_connection_parser],
+    )
     get_parser.add_argument("remote", help="Remote file path")
     get_parser.add_argument("local", nargs="?", help="Local destination path")
     get_parser.set_defaults(func=cmd_get)
 
-    put_parser = subparsers.add_parser("put", help="Upload a local file")
+    put_parser = subparsers.add_parser(
+        "put",
+        help="Upload a local file",
+        parents=[sub_connection_parser],
+    )
     put_parser.add_argument("local", help="Local file path")
     put_parser.add_argument("remote", help="Remote destination path")
     put_parser.set_defaults(func=cmd_put)
 
-    mkdir_parser = subparsers.add_parser("mkdir", help="Create a remote directory")
+    mkdir_parser = subparsers.add_parser(
+        "mkdir",
+        help="Create a remote directory",
+        parents=[sub_connection_parser],
+    )
     mkdir_parser.add_argument("path", help="Remote directory path")
     mkdir_parser.set_defaults(func=cmd_mkdir)
 
-    rmdir_parser = subparsers.add_parser("rmdir", help="Remove a remote directory")
+    rmdir_parser = subparsers.add_parser(
+        "rmdir",
+        help="Remove a remote directory",
+        parents=[sub_connection_parser],
+    )
     rmdir_parser.add_argument("path", help="Remote directory path")
     rmdir_parser.set_defaults(func=cmd_rmdir)
 
-    rm_parser = subparsers.add_parser("rm", help="Delete a remote file")
+    rm_parser = subparsers.add_parser(
+        "rm",
+        help="Delete a remote file",
+        parents=[sub_connection_parser],
+    )
     rm_parser.add_argument("path", help="Remote file path")
     rm_parser.set_defaults(func=cmd_rm)
 
-    df_parser = subparsers.add_parser("df", help="Show filesystem size and free space")
+    df_parser = subparsers.add_parser(
+        "df",
+        help="Show filesystem size and free space",
+        parents=[sub_connection_parser],
+    )
     df_parser.set_defaults(func=cmd_df)
 
-    shell_parser = subparsers.add_parser("shell", help="Start an interactive remote shell")
+    shell_parser = subparsers.add_parser(
+        "shell",
+        help="Start an interactive remote shell",
+        parents=[sub_connection_parser],
+    )
     shell_parser.set_defaults(func=cmd_shell)
 
-    tui_parser = subparsers.add_parser("tui", help="Browse the remote filesystem in a TUI")
+    tui_parser = subparsers.add_parser(
+        "tui",
+        help="Browse the remote filesystem in a TUI",
+        parents=[sub_connection_parser],
+    )
     tui_parser.add_argument(
         "--local-dir",
         default=None,

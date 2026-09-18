@@ -122,33 +122,47 @@ class TNFSClient:
         return MAX_WRITE_UDP
 
     def _connect(self, transport: Optional[str]) -> str:
+        # When auto-selecting transport, fail over from TCP quickly instead of
+        # waiting the full operation timeout before trying UDP.
         if transport in (None, "tcp"):
+            connect_timeout = self.timeout if transport == "tcp" else min(self.timeout, 3.0)
             try:
-                return self._open_tcp()
+                return self._open_tcp(connect_timeout=connect_timeout)
             except OSError:
                 if transport == "tcp":
                     raise
         return self._open_udp()
 
-    def _open_tcp(self) -> str:
+    def _open_tcp(self, connect_timeout: float | None = None) -> str:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(self.timeout)
-        sock.connect((self.host, self.port))
-        self._sock = sock
-        self._address = (self.host, self.port)
-        self.transport = "tcp"
-        self._mount()
-        return "tcp"
+        sock.settimeout(self.timeout if connect_timeout is None else connect_timeout)
+        try:
+            sock.connect((self.host, self.port))
+            sock.settimeout(self.timeout)
+            self._sock = sock
+            self._address = (self.host, self.port)
+            self.transport = "tcp"
+            self._mount()
+            return "tcp"
+        except OSError:
+            sock.close()
+            self._sock = None
+            raise
 
     def _open_udp(self) -> str:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.settimeout(self.timeout)
-        resolved = socket.gethostbyname(self.host)
-        self._sock = sock
-        self._address = (resolved, self.port)
-        self.transport = "udp"
-        self._mount()
-        return "udp"
+        try:
+            resolved = socket.gethostbyname(self.host)
+            self._sock = sock
+            self._address = (resolved, self.port)
+            self.transport = "udp"
+            self._mount()
+            return "udp"
+        except OSError:
+            sock.close()
+            self._sock = None
+            raise
 
     def close(self) -> None:
         if self.session_id is not None and self._sock is not None:
@@ -179,7 +193,7 @@ class TNFSClient:
 
             if self.transport == "tcp":
                 self._sock.sendall(packet)
-                data = self._recv_tcp()
+                data = self._recv_tcp(command)
             else:
                 self._sock.sendto(packet, self._address)
                 data, _ = self._sock.recvfrom(65535)
@@ -195,17 +209,60 @@ class TNFSClient:
 
         return data
 
-    def _recv_tcp(self) -> bytes:
+    def _recv_exact(self, nbytes: int) -> bytes:
         assert self._sock is not None
-        chunks = []
-        while True:
-            chunk = self._sock.recv(65535)
+        chunks: list[bytes] = []
+        remaining = nbytes
+        while remaining > 0:
+            chunk = self._sock.recv(remaining)
             if not chunk:
-                break
+                raise TNFSError(0xFF, "Connection closed while reading TNFS response")
             chunks.append(chunk)
-            if len(chunk) < 65535:
-                break
+            remaining -= len(chunk)
         return b"".join(chunks)
+
+    def _recv_tcp(self, command: int) -> bytes:
+        header = self._recv_exact(4)
+        status = self._recv_exact(1)
+        body = header + status
+
+        if status[0] in (TNFS_EOF,) or (status[0] != 0 and command != CMD_MOUNT):
+            return body
+
+        if command == CMD_MOUNT:
+            if status[0] == 0:
+                return body + self._recv_exact(4)
+            return body
+
+        if command in (CMD_OPENDIR, CMD_OPEN):
+            return body + self._recv_exact(1)
+
+        if command == CMD_READDIR:
+            name = bytearray()
+            while True:
+                byte = self._recv_exact(1)[0]
+                name.append(byte)
+                if byte == 0:
+                    break
+            return body + bytes(name)
+
+        if command == CMD_READ:
+            if status[0] != 0:
+                return body
+            nbytes_bytes = self._recv_exact(2)
+            nbytes = struct.unpack("<H", nbytes_bytes)[0]
+            return body + nbytes_bytes + self._recv_exact(nbytes)
+
+        if command == CMD_WRITE:
+            return body + self._recv_exact(2)
+
+        if command == CMD_STAT:
+            return body + self._recv_exact(22)
+
+        if command in (CMD_SIZE, CMD_FREE):
+            return body + self._recv_exact(4)
+
+        return body
 
     def _status(self, data: bytes, context: str) -> int:
         status = data[4]
