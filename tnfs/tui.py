@@ -500,30 +500,30 @@ class TNFSBrowser(App):
             return
         entry = self._selected_remote_entry()
         if entry is None:
-            self._set_status("No remote file selected", transient=True)
+            self._set_status("No remote entry selected", transient=True)
             return
-        if entry.is_dir:
-            self._set_status("Select a remote file to download", transient=True)
+        if entry.name == "..":
+            self._set_status("Cannot download '..'", transient=True)
             return
         destination = (self.local_browser.cwd / entry.name).resolve()
-        self._set_busy(f"Downloading {entry.name} -> {destination}")
+        kind = "directory" if entry.is_dir else "file"
+        self._set_busy(f"Downloading {kind} {entry.name} -> {destination}")
         self._download_entry(entry, destination)
 
     @work(thread=True, exclusive=True)
     def _download_entry(self, entry: RemoteEntry, destination: Path) -> None:
         assert self.session is not None
         try:
-            data = self.session.client.read_file(entry.path)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(data)
-            self.call_from_thread(self._finish_download, entry.path, destination, len(data))
+            summary = self.session.download_tree(entry.path, destination)
+            self.call_from_thread(self._finish_download, summary)
         except (TNFSError, OSError) as exc:
             self.call_from_thread(self._fail_transfer, f"Download failed: {exc}")
 
-    def _finish_download(self, remote_path: str, destination: Path, size: int) -> None:
+    def _finish_download(self, summary) -> None:
         self.refresh_local_listing()
         self._clear_busy(
-            f"Downloaded {size} bytes from {remote_path} to {destination}",
+            f"Downloaded {summary.files} file(s), {summary.directories} dir(s), "
+            f"{summary.bytes_transferred} bytes to {summary.destination}",
             transient=True,
         )
 
@@ -533,29 +533,31 @@ class TNFSBrowser(App):
             return
         entry = self._selected_local_entry()
         if entry is None:
-            self._set_status("No local file selected", transient=True)
+            self._set_status("No local entry selected", transient=True)
             return
-        if entry.is_dir:
-            self._set_status("Select a local file to upload", transient=True)
+        if entry.name == "..":
+            self._set_status("Cannot upload '..'", transient=True)
             return
         assert self.session is not None
         remote_path = f"{self.session.cwd.rstrip('/')}/{entry.name}"
-        self._set_busy(f"Uploading {entry.name} to {remote_path}...")
+        kind = "directory" if entry.is_dir else "file"
+        self._set_busy(f"Uploading {kind} {entry.name} to {remote_path}...")
         self._upload_entry(entry, remote_path)
 
     @work(thread=True, exclusive=True)
     def _upload_entry(self, entry: LocalEntry, remote_path: str) -> None:
         assert self.session is not None
         try:
-            written = self.session.client.write_file(remote_path, entry.path.read_bytes())
-            self.call_from_thread(self._finish_upload, entry.path, remote_path, written)
+            summary = self.session.upload_tree(entry.path, remote_path)
+            self.call_from_thread(self._finish_upload, summary)
         except (TNFSError, OSError) as exc:
             self.call_from_thread(self._fail_transfer, f"Upload failed: {exc}")
 
-    def _finish_upload(self, source: Path, remote_path: str, size: int) -> None:
+    def _finish_upload(self, summary) -> None:
         self.refresh_remote_listing()
         self._clear_busy(
-            f"Uploaded {size} bytes from {source} to {remote_path}",
+            f"Uploaded {summary.files} file(s), {summary.directories} dir(s), "
+            f"{summary.bytes_transferred} bytes to {summary.destination}",
             transient=True,
         )
 
@@ -686,20 +688,47 @@ class _TUICommandRunner:
             return self.session.cwd
 
         if command == "get":
-            if not args:
-                raise ValueError("usage: get <remote> [local]")
-            remote = args[0]
-            local = Path(args[1]) if len(args) > 1 else self.app.local_browser.cwd / Path(remote).name
-            _, destination, size = self.session.download(remote, local)
+            recursive = False
+            paths = []
+            for arg in args:
+                if arg in {"-r", "--recursive"}:
+                    recursive = True
+                else:
+                    paths.append(arg)
+            if not paths:
+                raise ValueError("usage: get [-r] <remote> [local]")
+            remote = paths[0]
+            local = Path(paths[1]) if len(paths) > 1 else self.app.local_browser.cwd / Path(remote).name
+            _, info = self.session.stat(remote)
+            if info.is_dir and not recursive:
+                raise ValueError(f"{remote!r} is a directory; use: get -r {remote}")
+            summary = self.session.download_tree(remote, local)
             self.touched_local = True
-            return f"Downloaded {size} bytes to {destination}"
+            return (
+                f"Downloaded {summary.files} file(s), {summary.directories} dir(s), "
+                f"{summary.bytes_transferred} bytes to {summary.destination}"
+            )
 
         if command == "put":
-            if not args:
-                raise ValueError("usage: put <local> [remote]")
-            source, target, size = self.session.upload(args[0], args[1] if len(args) > 1 else None)
+            recursive = False
+            paths = []
+            for arg in args:
+                if arg in {"-r", "--recursive"}:
+                    recursive = True
+                else:
+                    paths.append(arg)
+            if not paths:
+                raise ValueError("usage: put [-r] <local> [remote]")
+            local = Path(paths[0])
+            remote = paths[1] if len(paths) > 1 else None
+            if local.is_dir() and not recursive:
+                raise ValueError(f"{local} is a directory; use: put -r {local}")
+            summary = self.session.upload_tree(local, remote)
             self.touched_remote = True
-            return f"Uploaded {size} bytes to {target}"
+            return (
+                f"Uploaded {summary.files} file(s), {summary.directories} dir(s), "
+                f"{summary.bytes_transferred} bytes to {summary.destination}"
+            )
 
         if command == "mkdir":
             if not args:
@@ -714,18 +743,38 @@ class _TUICommandRunner:
             return f"Created remote directory {created}"
 
         if command == "rm":
-            if not args:
-                raise ValueError("usage: rm <path>")
+            recursive = False
+            paths = []
+            for arg in args:
+                if arg in {"-r", "--recursive"}:
+                    recursive = True
+                else:
+                    paths.append(arg)
+            if not paths:
+                raise ValueError("usage: rm [-r] <path>")
             if self.app.active_pane == "local":
-                path = self.app.local_browser.resolve(args[0])
+                path = self.app.local_browser.resolve(paths[0])
                 if path.is_dir():
-                    raise IsADirectoryError(f"Is a directory: {path}")
+                    if not recursive:
+                        raise ValueError(f"{path} is a directory; use: rm -r {paths[0]}")
+                    import shutil
+
+                    shutil.rmtree(path)
+                    self.touched_local = True
+                    return f"Removed local directory tree {path}"
                 path.unlink()
                 self.touched_local = True
                 return f"Removed local file {path}"
-            removed = self.session.unlink(args[0])
+            summary = self.session.remove(paths[0], recursive=recursive)
             self.touched_remote = True
-            return f"Removed remote file {removed}"
+            if summary.directories and not summary.files:
+                return f"Removed directory {summary.source}"
+            if summary.directories:
+                return (
+                    f"Removed {summary.files} file(s) and {summary.directories} dir(s) "
+                    f"under {summary.source}"
+                )
+            return f"Removed file {summary.source}"
 
         if command == "rmdir":
             if not args:

@@ -81,21 +81,65 @@ def cmd_get(args: argparse.Namespace) -> int:
         transport=args.transport,
         mount_path=args.mount,
     ) as session:
-        _, destination, size = session.download(args.remote, args.local or Path(args.remote).name)
-        print(f"Downloaded {size} bytes to {destination}")
+        remote = args.remote
+        local = Path(args.local) if args.local else Path(Path(remote).name)
+        _, info = session.stat(remote)
+        if info.is_dir and not args.recursive:
+            print(
+                f"Remote path {remote!r} is a directory. Re-run with -r/--recursive to download it.",
+                file=sys.stderr,
+            )
+            return 1
+
+        if args.recursive or info.is_dir:
+            summary = session.download_tree(
+                remote,
+                local,
+                progress=lambda path, size: print(f"  {path} ({size} bytes)"),
+            )
+            print(
+                f"Downloaded {summary.files} file(s), {summary.directories} dir(s), "
+                f"{summary.bytes_transferred} bytes to {summary.destination}"
+            )
+        else:
+            _, destination, size = session.download(remote, local)
+            print(f"Downloaded {size} bytes to {destination}")
     return 0
 
 
 @handle_errors
 def cmd_put(args: argparse.Namespace) -> int:
+    source = Path(args.local)
+    if not source.exists():
+        print(f"Local path not found: {source}", file=sys.stderr)
+        return 1
+
     with RemoteSession(
         host=args.host,
         port=args.port,
         transport=args.transport,
         mount_path=args.mount,
     ) as session:
-        _, target, size = session.upload(args.local, args.remote)
-        print(f"Uploaded {size} bytes to {target}")
+        if source.is_dir() and not args.recursive:
+            print(
+                f"Local path {source} is a directory. Re-run with -r/--recursive to upload it.",
+                file=sys.stderr,
+            )
+            return 1
+
+        if args.recursive or source.is_dir():
+            summary = session.upload_tree(
+                source,
+                args.remote,
+                progress=lambda path, size: print(f"  {path} ({size} bytes)"),
+            )
+            print(
+                f"Uploaded {summary.files} file(s), {summary.directories} dir(s), "
+                f"{summary.bytes_transferred} bytes to {summary.destination}"
+            )
+        else:
+            _, target, size = session.upload(source, args.remote)
+            print(f"Uploaded {size} bytes to {target}")
     return 0
 
 
@@ -133,8 +177,16 @@ def cmd_rm(args: argparse.Namespace) -> int:
         transport=args.transport,
         mount_path=args.mount,
     ) as session:
-        removed = session.unlink(args.path)
-        print(f"Removed file {removed}")
+        summary = session.remove(args.path, recursive=args.recursive)
+        if summary.directories and not summary.files:
+            print(f"Removed directory {summary.source}")
+        elif summary.directories:
+            print(
+                f"Removed {summary.files} file(s) and {summary.directories} dir(s) "
+                f"under {summary.source}"
+            )
+        else:
+            print(f"Removed file {summary.source}")
     return 0
 
 
@@ -268,20 +320,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     get_parser = subparsers.add_parser(
         "get",
-        help="Download a remote file",
+        help="Download a remote file or directory",
         parents=[sub_connection_parser],
     )
-    get_parser.add_argument("remote", help="Remote file path")
+    get_parser.add_argument("remote", help="Remote file or directory path")
     get_parser.add_argument("local", nargs="?", help="Local destination path")
+    get_parser.add_argument(
+        "-r",
+        "--recursive",
+        action="store_true",
+        help="Download directories recursively",
+    )
     get_parser.set_defaults(func=cmd_get)
 
     put_parser = subparsers.add_parser(
         "put",
-        help="Upload a local file",
+        help="Upload a local file or directory",
         parents=[sub_connection_parser],
     )
-    put_parser.add_argument("local", help="Local file path")
-    put_parser.add_argument("remote", help="Remote destination path")
+    put_parser.add_argument("local", help="Local file or directory path")
+    put_parser.add_argument("remote", nargs="?", help="Remote destination path")
+    put_parser.add_argument(
+        "-r",
+        "--recursive",
+        action="store_true",
+        help="Upload directories recursively",
+    )
     put_parser.set_defaults(func=cmd_put)
 
     mkdir_parser = subparsers.add_parser(
@@ -302,10 +366,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     rm_parser = subparsers.add_parser(
         "rm",
-        help="Delete a remote file",
+        help="Delete a remote file or directory",
         parents=[sub_connection_parser],
     )
-    rm_parser.add_argument("path", help="Remote file path")
+    rm_parser.add_argument("path", help="Remote file or directory path")
+    rm_parser.add_argument(
+        "-r",
+        "--recursive",
+        action="store_true",
+        help="Recursively delete directories and their contents",
+    )
     rm_parser.set_defaults(func=cmd_rm)
 
     df_parser = subparsers.add_parser(

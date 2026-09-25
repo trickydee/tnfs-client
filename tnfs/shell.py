@@ -16,11 +16,11 @@ HELP_TEXT = """Available commands:
   pwd                     Print current remote directory
   stat <path>             Show file or directory metadata
   cat <path>              Print a remote file
-  get <remote> [local]    Download a file
-  put <local> [remote]    Upload a file
+  get [-r] <remote> [local] Download a file or directory (-r for dirs)
+  put [-r] <local> [remote] Upload a file or directory (-r for dirs)
   mkdir <path>            Create a directory
-  rmdir <path>            Remove a directory
-  rm <path>               Delete a file
+  rmdir <path>            Remove an empty directory
+  rm [-r] <path>          Delete a file or directory (-r for non-empty trees)
   df                      Show filesystem usage
   help                    Show this help
   quit, exit              Disconnect and leave the shell
@@ -120,21 +120,46 @@ class InteractiveShell:
             return False
 
         if command == "get":
-            if not args:
-                raise ValueError("usage: get <remote> [local]")
-            remote = args[0]
-            local = args[1] if len(args) > 1 else Path(remote).name
-            resolved, destination, size = self.session.download(remote, local)
-            print(f"Downloaded {size} bytes from {resolved} to {destination}")
+            recursive = False
+            paths = []
+            for arg in args:
+                if arg in {"-r", "--recursive"}:
+                    recursive = True
+                else:
+                    paths.append(arg)
+            if not paths:
+                raise ValueError("usage: get [-r] <remote> [local]")
+            remote = paths[0]
+            local = paths[1] if len(paths) > 1 else Path(remote).name
+            _, info = self.session.stat(remote)
+            if info.is_dir and not recursive:
+                raise ValueError(f"{remote!r} is a directory; use: get -r {remote}")
+            summary = self.session.download_tree(remote, local)
+            print(
+                f"Downloaded {summary.files} file(s), {summary.directories} dir(s), "
+                f"{summary.bytes_transferred} bytes to {summary.destination}"
+            )
             return False
 
         if command == "put":
-            if not args:
-                raise ValueError("usage: put <local> [remote]")
-            local = args[0]
-            remote = args[1] if len(args) > 1 else None
-            source, target, size = self.session.upload(local, remote)
-            print(f"Uploaded {size} bytes from {source} to {target}")
+            recursive = False
+            paths = []
+            for arg in args:
+                if arg in {"-r", "--recursive"}:
+                    recursive = True
+                else:
+                    paths.append(arg)
+            if not paths:
+                raise ValueError("usage: put [-r] <local> [remote]")
+            local = Path(paths[0])
+            remote = paths[1] if len(paths) > 1 else None
+            if local.is_dir() and not recursive:
+                raise ValueError(f"{local} is a directory; use: put -r {local}")
+            summary = self.session.upload_tree(local, remote)
+            print(
+                f"Uploaded {summary.files} file(s), {summary.directories} dir(s), "
+                f"{summary.bytes_transferred} bytes to {summary.destination}"
+            )
             return False
 
         if command == "mkdir":
@@ -152,10 +177,25 @@ class InteractiveShell:
             return False
 
         if command == "rm":
-            if not args:
-                raise ValueError("usage: rm <path>")
-            removed = self.session.unlink(args[0])
-            print(f"Removed file {removed}")
+            recursive = False
+            paths = []
+            for arg in args:
+                if arg in {"-r", "--recursive"}:
+                    recursive = True
+                else:
+                    paths.append(arg)
+            if not paths:
+                raise ValueError("usage: rm [-r] <path>")
+            summary = self.session.remove(paths[0], recursive=recursive)
+            if summary.directories and not summary.files:
+                print(f"Removed directory {summary.source}")
+            elif summary.directories:
+                print(
+                    f"Removed {summary.files} file(s) and {summary.directories} dir(s) "
+                    f"under {summary.source}"
+                )
+            else:
+                print(f"Removed file {summary.source}")
             return False
 
         if command == "df":
